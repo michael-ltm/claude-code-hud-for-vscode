@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { execFile } from 'child_process';
 import type { HudData } from './types';
 
 const DATA_FILE = path.join(os.homedir(), '.claude-code-hud', 'status.json');
@@ -24,6 +25,9 @@ export function activate(context: vscode.ExtensionContext) {
   sevenDayItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 197);
 
   context.subscriptions.push(modelItem, contextItem, fiveHourItem, sevenDayItem);
+
+  // Auto-configure Claude Code statusline bridge on activation
+  autoConfigureBridge(context);
 
   // Initial update
   updateStatusBar();
@@ -56,10 +60,138 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // Register setup command
+  // Register manual setup command as fallback
   context.subscriptions.push(
-    vscode.commands.registerCommand('claudeCodeHud.setup', setupBridge)
+    vscode.commands.registerCommand('claudeCodeHud.setup', () => configureBridge(context))
   );
+}
+
+/**
+ * Auto-configure the Claude Code statusline bridge.
+ * Runs `claude config set statusline "node <bridge.mjs>"` silently on activation.
+ */
+function autoConfigureBridge(context: vscode.ExtensionContext) {
+  const bridgePath = path.join(context.extensionPath, 'statusline-bridge', 'bridge.mjs');
+  if (!fs.existsSync(bridgePath)) {
+    return;
+  }
+
+  // Check if already configured with this exact path (avoid re-running every activation)
+  const markerFile = path.join(context.globalStorageUri.fsPath, 'configured-bridge-path.txt');
+  try {
+    fs.mkdirSync(path.dirname(markerFile), { recursive: true });
+    if (fs.existsSync(markerFile)) {
+      const savedPath = fs.readFileSync(markerFile, 'utf8').trim();
+      if (savedPath === bridgePath) {
+        // Already configured with same path, skip
+        return;
+      }
+    }
+  } catch {
+    // continue with configuration
+  }
+
+  // Find claude CLI
+  const claudeCmd = process.platform === 'win32' ? 'claude.exe' : 'claude';
+
+  // Run: claude config set statusline "node /path/to/bridge.mjs"
+  const statuslineValue = `node ${bridgePath}`;
+  execFile(claudeCmd, ['config', 'set', 'statusline', statuslineValue], { timeout: 10000 }, (err) => {
+    if (err) {
+      // claude CLI not found or failed - try common paths
+      const fallbackPaths = getFallbackClaudePaths();
+      tryFallbackConfigure(fallbackPaths, statuslineValue, markerFile, bridgePath);
+      return;
+    }
+    // Save marker so we don't re-run next time
+    try { fs.writeFileSync(markerFile, bridgePath); } catch { /* ignore */ }
+  });
+}
+
+function getFallbackClaudePaths(): string[] {
+  const home = os.homedir();
+  if (process.platform === 'win32') {
+    return [
+      path.join(home, 'AppData', 'Roaming', 'npm', 'claude.cmd'),
+      path.join(home, 'AppData', 'Local', 'npm', 'claude.cmd'),
+      path.join(home, '.npm-global', 'bin', 'claude.cmd'),
+    ];
+  }
+  return [
+    '/usr/local/bin/claude',
+    path.join(home, '.npm-global', 'bin', 'claude'),
+    path.join(home, '.local', 'bin', 'claude'),
+    '/opt/homebrew/bin/claude',
+  ];
+}
+
+function tryFallbackConfigure(paths: string[], statuslineValue: string, markerFile: string, bridgePath: string) {
+  if (paths.length === 0) {
+    // All fallbacks exhausted - write config file directly
+    writeConfigDirectly(statuslineValue, markerFile, bridgePath);
+    return;
+  }
+  const claudePath = paths.shift()!;
+  if (!fs.existsSync(claudePath)) {
+    tryFallbackConfigure(paths, statuslineValue, markerFile, bridgePath);
+    return;
+  }
+  execFile(claudePath, ['config', 'set', 'statusline', statuslineValue], { timeout: 10000 }, (err) => {
+    if (err) {
+      tryFallbackConfigure(paths, statuslineValue, markerFile, bridgePath);
+      return;
+    }
+    try { fs.writeFileSync(markerFile, bridgePath); } catch { /* ignore */ }
+  });
+}
+
+/**
+ * If claude CLI is not available, write the config directly to ~/.claude/settings.json
+ */
+function writeConfigDirectly(statuslineValue: string, markerFile: string, bridgePath: string) {
+  const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
+  try {
+    let settings: Record<string, unknown> = {};
+    if (fs.existsSync(settingsPath)) {
+      settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    }
+    // Only set if not already configured
+    if (settings['statusline'] !== statuslineValue) {
+      settings['statusline'] = statuslineValue;
+      fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+    }
+    try { fs.writeFileSync(markerFile, bridgePath); } catch { /* ignore */ }
+  } catch {
+    // Last resort failed - user will need manual setup
+  }
+}
+
+async function configureBridge(context: vscode.ExtensionContext) {
+  const bridgePath = path.join(context.extensionPath, 'statusline-bridge', 'bridge.mjs');
+
+  if (!fs.existsSync(bridgePath)) {
+    vscode.window.showErrorMessage('Bridge script not found. Please reinstall the extension.');
+    return;
+  }
+
+  const statuslineValue = `node ${bridgePath}`;
+  const settingsCmd = `claude config set statusline "${statuslineValue}"`;
+
+  const result = await vscode.window.showInformationMessage(
+    'Configure Claude Code statusline bridge?',
+    { modal: true, detail: `This will run:\n${settingsCmd}` },
+    'Auto Configure',
+    'Copy Command'
+  );
+
+  if (result === 'Auto Configure') {
+    autoConfigureBridge(context);
+    vscode.window.showInformationMessage('Claude Code HUD bridge configured! Start a new Claude Code session to see stats.');
+  } else if (result === 'Copy Command') {
+    await vscode.env.clipboard.writeText(settingsCmd);
+    vscode.window.showInformationMessage('Command copied to clipboard!');
+  }
 }
 
 function startFileWatcher(context: vscode.ExtensionContext) {
@@ -68,7 +200,7 @@ function startFileWatcher(context: vscode.ExtensionContext) {
     if (!fs.existsSync(dir)) {
       return;
     }
-    fileWatcher = fs.watch(dir, (_eventType, filename) => {
+    fileWatcher = fs.watch(dir, (_eventType: string, filename: string | null) => {
       // filename can be null on some platforms (e.g. Linux)
       if (!filename || filename === 'status.json') {
         updateStatusBar();
@@ -218,35 +350,6 @@ function updateStatusBar() {
     }
   } else {
     sevenDayItem.hide();
-  }
-}
-
-async function setupBridge() {
-  const bridgePath = path.resolve(__dirname, '..', 'statusline-bridge', 'bridge.mjs');
-
-  if (!fs.existsSync(bridgePath)) {
-    vscode.window.showErrorMessage('Bridge script not found. Please reinstall the extension.');
-    return;
-  }
-
-  // Quote path for cross-platform compatibility (Windows paths with spaces)
-  const quotedPath = bridgePath.includes(' ') ? `"${bridgePath}"` : bridgePath;
-  const settingsCmd = `claude config set statusline "node ${quotedPath}"`;
-
-  const result = await vscode.window.showInformationMessage(
-    'To display Claude Code stats, you need to configure the statusline plugin.\nRun the following command in your terminal:',
-    { modal: true, detail: settingsCmd },
-    'Copy Command',
-    'Run in Terminal'
-  );
-
-  if (result === 'Copy Command') {
-    await vscode.env.clipboard.writeText(settingsCmd);
-    vscode.window.showInformationMessage('Command copied to clipboard! Paste it in your terminal.');
-  } else if (result === 'Run in Terminal') {
-    const terminal = vscode.window.createTerminal('Claude Code HUD Setup');
-    terminal.show();
-    terminal.sendText(settingsCmd);
   }
 }
 
