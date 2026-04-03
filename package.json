@@ -1,0 +1,66 @@
+{
+  "name": "claude-code-hud",
+  "displayName": "Claude Code HUD",
+  "description": "Display Claude Code usage stats (context, model, rate limits) in VS Code status bar",
+  "version": "0.0.1",
+  "publisher": "ming",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "claudeCodeHud.setup",
+        "title": "Claude Code HUD: Setup Statusline Bridge"
+      }
+    ],
+    "configuration": {
+      "title": "Claude Code HUD",
+      "properties": {
+        "claudeCodeHud.refreshInterval": {
+          "type": "number",
+          "default": 1000,
+          "description": "Refresh interval in milliseconds"
+        },
+        "claudeCodeHud.showModel": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show model name in status bar"
+        },
+        "claudeCodeHud.showContext": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show context window usage in status bar"
+        },
+        "claudeCodeHud.showFiveHour": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show 5-hour rate limit usage"
+        },
+        "claudeCodeHud.showSevenDay": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show 7-day rate limit usage"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "npx @vscode/vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0"
+  }
+}
